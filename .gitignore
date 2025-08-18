@@ -1,0 +1,42 @@
+# --- Node.js dependencies and environment files ---
+/node_modules/
+.env
+.env.local
+.env.*
+
+# --- Build output ---
+/build/
+/dist/
+
+# --- Logs ---
+/npm-debug.log*
+/yarn-debug.log*
+/yarn-error.log*
+
+# --- OS-specific files ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.dat
+
+# --- IDE/editor specific files ---
+/.vscode/
+/.idea/
+*.sublime-workspace
+*.sublime-project
+
+# --- Backend specific ---
+/backend/node_modules/
+
+# --- Frontend specific ---
+/frontend/node_modules/
+
+# --- Optional: package lock files (if you want to ignore) ---
+# Uncomment if you don't want to include lock files in repo
+# /frontend/package-lock.json
+# /backend/package-lock.json
+
+# --- Other ---
+/.DS_Store
+*.log

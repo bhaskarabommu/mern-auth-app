@@ -1,3 +1,5 @@
+// backend/server.js
+
 const express = require('express');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
@@ -7,16 +9,38 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// -------- App config --------
+const PORT = process.env.PORT || 5000;
+const MONGODB_URI =
+  process.env.MONGODB_URI || 'mongodb://localhost:27017/mern_auth_db';
+const JWT_SECRET =
+  process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
 
-// MongoDB connection
+// -------- Middleware --------
+app.use(
+  cors({
+    origin: CORS_ORIGIN,
+    credentials: true,
+  })
+);
+app.use(express.json({ limit: '1mb' }));
+
+// Minimal security headers (adjust as needed)
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+// -------- MongoDB connection --------
+mongoose.set('strictQuery', true);
+
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/mern_auth_db', {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
+    await mongoose.connect(MONGODB_URI, {
+      autoIndex: true,
     });
     console.log('MongoDB connected successfully');
   } catch (error) {
@@ -25,243 +49,195 @@ const connectDB = async () => {
   }
 };
 
-// User Schema
-const userSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true,
-    trim: true
+// -------- Schemas & Models --------
+const userSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, unique: true, lowercase: true },
+    password: { type: String, required: true, minlength: 6 },
+    role: {
+      type: String,
+      enum: ['user', 'admin'],
+      default: 'user',
+    },
   },
-  email: {
-    type: String,
-    required: true,
-    unique: true,
-    lowercase: true
-  },
-  password: {
-    type: String,
-    required: true,
-    minlength: 6
-  },
-  role: {
-    type: String,
-    enum: ['user', 'admin'],
-    default: 'user'
-  }
-}, {
-  timestamps: true
-});
+  { timestamps: true }
+);
 
-// Data Item Schema
-const dataItemSchema = new mongoose.Schema({
-  title: {
-    type: String,
-    required: true,
-    trim: true
+const dataItemSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true, trim: true },
+    description: { type: String, required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   },
-  description: {
-    type: String,
-    required: true
-  },
-  userId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
-  }
-}, {
-  timestamps: true
-});
+  { timestamps: true }
+);
 
 const User = mongoose.model('User', userSchema);
 const DataItem = mongoose.model('DataItem', dataItemSchema);
 
-// JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this-in-production';
+// -------- Helpers --------
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
 
 // Auth middleware
-const authenticateToken = async (req, res, next) => {
+const authenticateToken = asyncHandler(async (req, res, next) => {
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7)
+    : null;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
   try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-      return res.status(401).json({ error: 'Access token required' });
-    }
-
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await User.findById(decoded.userId).select('-password');
-    
     if (!user) {
       return res.status(401).json({ error: 'Invalid token' });
     }
-
     req.user = user;
     next();
-  } catch (error) {
-    res.status(403).json({ error: 'Invalid or expired token' });
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
   }
-};
+});
 
-// Routes
+// -------- Routes: Auth --------
+app.post(
+  '/api/auth/register',
+  asyncHandler(async (req, res) => {
+    const { name, email, password } = req.body || {};
 
-// Register user
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
-
-    // Validate input
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'All fields are required' });
     }
-
     if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      return res
+        .status(400)
+        .json({ error: 'Password must be at least 6 characters' });
     }
 
-    // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ error: 'User already exists' });
     }
 
-    // Hash password
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Create user
-    const user = new User({
-      name,
-      email,
-      password: hashedPassword
-    });
-
+    const user = new User({ name, email, password: hashedPassword });
     await user.save();
 
-    // Create token
-    const token = jwt.sign(
-      { userId: user._id },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
+    const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
+      expiresIn: '24h',
+    });
 
-    res.status(201).json({
+    return res.status(201).json({
       message: 'User created successfully',
       token,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role
-      }
+        role: user.role,
+      },
     });
-  } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+  })
+);
 
-// Login user
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    // Validate input
+app.post(
+  '/api/auth/login',
+  asyncHandler(async (req, res) => {
+    const { email, password } = req.body || {};
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Find user
     const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(400).json({ error: 'Invalid credentials' });
-    }
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
 
-    // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
+    if (!isPasswordValid)
       return res.status(400).json({ error: 'Invalid credentials' });
-    }
 
-    // Create token
-    const token = jwt.sign(
-      { userId: user._id },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
+    const token = jwt.sign({ userId: user._id }, JWT_SECRET, {
+      expiresIn: '24h',
+    });
 
-    res.json({
+    return res.json({
       message: 'Login successful',
       token,
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role
-      }
+        role: user.role,
+      },
     });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+  })
+);
 
-// Get current user
-app.get('/api/auth/me', authenticateToken, async (req, res) => {
-  res.json({
-    user: {
-      id: req.user._id,
-      name: req.user.name,
-      email: req.user.email,
-      role: req.user.role
-    }
-  });
-});
+app.get(
+  '/api/auth/me',
+  authenticateToken,
+  asyncHandler(async (req, res) => {
+    return res.json({
+      user: {
+        id: req.user._id,
+        name: req.user.name,
+        email: req.user.email,
+        role: req.user.role,
+      },
+    });
+  })
+);
 
-// CRUD Operations for Data Items
+// -------- Routes: Data (CRUD) --------
+app.get(
+  '/api/data',
+  authenticateToken,
+  asyncHandler(async (req, res) => {
+    const items = await DataItem.find({ userId: req.user._id }).sort({
+      createdAt: -1,
+    });
+    return res.json(items);
+  })
+);
 
-// Get all data items for current user
-app.get('/api/data', authenticateToken, async (req, res) => {
-  try {
-    const items = await DataItem.find({ userId: req.user._id })
-      .sort({ createdAt: -1 });
-    res.json(items);
-  } catch (error) {
-    console.error('Get data items error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Create new data item
-app.post('/api/data', authenticateToken, async (req, res) => {
-  try {
-    const { title, description } = req.body;
-
+app.post(
+  '/api/data',
+  authenticateToken,
+  asyncHandler(async (req, res) => {
+    const { title, description } = req.body || {};
     if (!title || !description) {
-      return res.status(400).json({ error: 'Title and description are required' });
+      return res
+        .status(400)
+        .json({ error: 'Title and description are required' });
     }
 
     const item = new DataItem({
       title,
       description,
-      userId: req.user._id
+      userId: req.user._id,
     });
-
     await item.save();
-    res.status(201).json(item);
-  } catch (error) {
-    console.error('Create data item error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
+    return res.status(201).json(item);
+  })
+);
 
-// Update data item
-app.put('/api/data/:id', authenticateToken, async (req, res) => {
-  try {
-    const { title, description } = req.body;
+app.put(
+  '/api/data/:id',
+  authenticateToken,
+  asyncHandler(async (req, res) => {
+    const { title, description } = req.body || {};
     const { id } = req.params;
 
     if (!title || !description) {
-      return res.status(400).json({ error: 'Title and description are required' });
+      return res
+        .status(400)
+        .json({ error: 'Title and description are required' });
     }
 
     const item = await DataItem.findOneAndUpdate(
@@ -273,40 +249,41 @@ app.put('/api/data/:id', authenticateToken, async (req, res) => {
     if (!item) {
       return res.status(404).json({ error: 'Data item not found' });
     }
+    return res.json(item);
+  })
+);
 
-    res.json(item);
-  } catch (error) {
-    console.error('Update data item error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Delete data item
-app.delete('/api/data/:id', authenticateToken, async (req, res) => {
-  try {
+app.delete(
+  '/api/data/:id',
+  authenticateToken,
+  asyncHandler(async (req, res) => {
     const { id } = req.params;
-
-    const item = await DataItem.findOneAndDelete({ _id: id, userId: req.user._id });
-
+    const item = await DataItem.findOneAndDelete({
+      _id: id,
+      userId: req.user._id,
+    });
     if (!item) {
       return res.status(404).json({ error: 'Data item not found' });
     }
+    return res.json({ message: 'Data item deleted successfully' });
+  })
+);
 
-    res.json({ message: 'Data item deleted successfully' });
-  } catch (error) {
-    console.error('Delete data item error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Health check endpoint
+// -------- Health check --------
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Connect to database and start server
+// -------- Global error handler --------
+app.use((err, req, res, next) => {
+  console.error(err);
+  if (res.headersSent) return next(err);
+  const status = err.status || 500;
+  res.status(status).json({ error: err.message || 'Server error' });
+});
+
+// -------- Start server --------
 connectDB().then(() => {
-  const PORT = process.env.PORT || 5000;
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });

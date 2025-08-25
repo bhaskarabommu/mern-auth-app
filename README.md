@@ -387,5 +387,6 @@ If you have any questions or issues:
 - **v1.3.0** - Enhanced security and monitoring
 
 ---
+K8s is work in progress...
 
 **🎉 Happy Coding!** Build amazing applications with this production-ready MERN stack foundation.
